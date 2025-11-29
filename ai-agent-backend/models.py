@@ -5,7 +5,7 @@ import uuid
 from database import Base
 
 class User(Base):
-    __tablename__ = "users"
+    __tablename__ = "agent_users"
 
     id = Column(Uuid, primary_key=True, index=True, default=uuid.uuid4)
     username = Column(String(80), unique=True, nullable=False, index=True)
@@ -20,10 +20,10 @@ class User(Base):
     price_alerts = relationship('PriceAlert', back_populates='user', lazy="selectin")
 
 class UserPreference(Base):
-    __tablename__ = "user_preferences"
+    __tablename__ = "agent_user_preferences"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('agent_users.id'), nullable=False)
     min_price = Column(Float, default=0)
     max_price = Column(Float, default=10000)
     preferred_brands = Column(Text)  # JSON string
@@ -34,10 +34,10 @@ class UserPreference(Base):
     user = relationship('User', back_populates='preferences')
 
 class SearchHistory(Base):
-    __tablename__ = "search_history"
+    __tablename__ = "agent_search_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('agent_users.id'), nullable=False)
     query = Column(String(200), nullable=False)
     budget = Column(Float)
     results_count = Column(Integer)
@@ -46,10 +46,10 @@ class SearchHistory(Base):
     user = relationship('User', back_populates='search_history')
 
 class Favorite(Base):
-    __tablename__ = "favorites"
+    __tablename__ = "agent_favorites"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('agent_users.id'), nullable=False)
     product_name = Column(String(200), nullable=False)
     product_url = Column(Text, nullable=False)
     price = Column(Float)
@@ -59,10 +59,10 @@ class Favorite(Base):
     user = relationship('User', back_populates='favorites')
 
 class PriceAlert(Base):
-    __tablename__ = "price_alert"
+    __tablename__ = "agent_price_alerts"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('agent_users.id'), nullable=False)
     product_name = Column(String(200), nullable=False)
     product_url = Column(Text, nullable=False)
     target_price = Column(Float, nullable=False)
