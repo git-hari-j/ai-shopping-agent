@@ -3,25 +3,33 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class EnhancedScraper:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
         })
         
     def get_driver(self, headless=True):
         """Initialize Chrome driver with optimal settings"""
         options = Options()
         if headless:
-            options.add_argument('--headless')
+            options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-blink-features=AutomationControlled')
@@ -32,140 +40,129 @@ class EnhancedScraper:
         options.add_experimental_option('useAutomationExtension', False)
         
         try:
-            driver = webdriver.Chrome(options=options)
+            # Use webdriver_manager to automatically handle driver installation
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=options)
+
+            # Stealth settings
             driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             return driver
         except Exception as e:
-            print(f"Error creating WebDriver: {e}")
+            logger.error(f"Error creating WebDriver: {e}")
             return None
     
     def rate_limit(self, min_delay=1, max_delay=3):
         """Add random delay between requests"""
         time.sleep(random.uniform(min_delay, max_delay))
     
+    def _scrape_fallback(self, url, platform):
+        """Fallback scraping using requests if Selenium fails"""
+        products = []
+        try:
+            logger.info(f"Attempting fallback scrape for {platform} via requests")
+            response = self.session.get(url, timeout=10)
+            if response.status_code != 200:
+                return products
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            if platform == 'Amazon':
+                items = soup.select('[data-component-type="s-search-result"]')
+                for item in items[:5]:
+                    title = item.select_one('h2 span')
+                    price_whole = item.select_one('.a-price-whole')
+                    price_frac = item.select_one('.a-price-fraction')
+                    link = item.select_one('h2 a')
+
+                    if title and price_whole:
+                        name = title.text.strip()
+                        price = float(price_whole.text.replace(',', '') + ('.' + price_frac.text if price_frac else ''))
+                        url = 'https://amazon.com' + link.get('href') if link else ''
+                        products.append({'name': name, 'price': price, 'url': url, 'platform': platform, 'rating': 0, 'image': ''})
+
+        except Exception as e:
+            logger.error(f"Fallback scrape failed: {e}")
+
+        return products
+
     def scrape_amazon(self, query, max_results=10):
         """Enhanced Amazon scraping with pagination"""
         products = []
         driver = self.get_driver()
         
         if not driver:
-            print("Failed to initialize WebDriver for Amazon")
-            return products
+            logger.warning("WebDriver failed, switching to fallback for Amazon")
+            return self._scrape_fallback(f"https://www.amazon.com/s?k={query.replace(' ', '+')}", 'Amazon')
         
         try:
             search_url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
             driver.get(search_url)
             
             # Wait for products to load
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-component-type="s-search-result"]'))
-            )
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-component-type="s-search-result"]'))
+                )
+            except:
+                logger.warning("Timeout waiting for Amazon results")
             
             product_elements = driver.find_elements(By.CSS_SELECTOR, '[data-component-type="s-search-result"]')
             
+            if not product_elements:
+                logger.warning("No Amazon products found with Selenium")
+
             for i, element in enumerate(product_elements[:max_results]):
                 try:
-                    # Try multiple selectors for product name
+                    # Name
                     name_elem = None
-                    name_selectors = [
-                        'h2 a span',
-                        'h2 span',
-                        '[data-cy="title-recipe-title"]',
-                        '.s-title-instructions-style span',
-                        '.a-size-medium.a-color-base',
-                        '.a-size-mini span'
-                    ]
-                    
-                    for selector in name_selectors:
-                        try:
-                            name_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if name_elem and name_elem.text.strip():
-                                break
-                        except:
-                            continue
-
-                    if not name_elem or not name_elem.text.strip():
-                        continue
-                    
-                    # Try multiple selectors for price
-                    price_elem = None
-                    price_selectors = [
-                        '.a-price-whole',
-                        '.a-price .a-offscreen',
-                        '.a-price-fraction',
-                        '.a-price-range'
-                    ]
-                    
-                    for selector in price_selectors:
-                        try:
-                            price_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if price_elem and price_elem.text.strip():
-                                break
-                        except:
-                            continue
-                    
-                    # Try to get link
-                    link_elem = None
-                    link_selectors = ['h2 a', 'a[href*="/dp/"]', '.a-link-normal']
-
-                    for selector in link_selectors:
-                        try:
-                            link_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if link_elem:
-                                break
-                        except:
-                            continue
-                    
-                    # Try to get image
-                    image_elem = None
                     try:
-                        image_elem = element.find_element(By.CSS_SELECTOR, 'img')
-                    except:
-                        pass
+                        name_elem = element.find_element(By.CSS_SELECTOR, 'h2 span')
+                    except: pass
                     
-                    # Try to get rating
-                    rating = 0
-                    try:
-                        rating_elem = element.find_element(By.CSS_SELECTOR, '.a-icon-alt')
-                        rating_text = rating_elem.get_attribute('innerHTML') or rating_elem.text
-                        if rating_text:
-                            rating = float(rating_text.split()[0])
-                    except:
-                        pass
-
-                    # Parse price
+                    if not name_elem: continue
+                    name = name_elem.text.strip()
+                    
+                    # Price
                     price = 0
-                    if price_elem:
-                        price_text = price_elem.text.replace('$', '').replace(',', '').strip()
-                        try:
-                            price = float(price_text)
-                        except:
-                            # Try to extract first number from text
-                            import re
-                            numbers = re.findall(r'\d+\.?\d*', price_text)
-                            if numbers:
-                                price = float(numbers[0])
+                    try:
+                        # Try standard price structure
+                        price_elem = element.find_element(By.CSS_SELECTOR, '.a-price')
+                        # Use textContent to get hidden text
+                        price_text = price_elem.get_attribute('textContent')
+                        # Extract first valid price number
+                        import re
+                        match = re.search(r'\$?(\d{1,3}(?:,\d{3})*\.?\d{0,2})', price_text)
+                        if match:
+                            price = float(match.group(1).replace(',', ''))
+                    except:
+                        pass
+                    
+                    # Link
+                    link = ""
+                    try:
+                        link_elem = element.find_element(By.CSS_SELECTOR, 'h2 a')
+                        link = link_elem.get_attribute('href')
+                    except: pass
 
-                    if name_elem and name_elem.text.strip():
-                        product = {
-                            'name': name_elem.text.strip(),
+                    if name and price > 0:
+                        products.append({
+                            'name': name,
                             'price': price,
-                            'rating': rating,
-                            'image': image_elem.get_attribute('src') if image_elem else '',
-                            'url': link_elem.get_attribute('href') if link_elem else '',
+                            'rating': 0,
+                            'image': '',
+                            'url': link,
                             'platform': 'Amazon'
-                        }
-                        products.append(product)
-                        print(f"Successfully scraped Amazon product: {product['name'][:50]}...")
+                        })
 
                 except Exception as e:
-                    print(f"Error parsing Amazon product {i}: {e}")
+                    logger.error(f"Error parsing Amazon product {i}: {e}")
                     continue
                     
         except Exception as e:
-            print(f"Error scraping Amazon: {e}")
+            logger.error(f"Error scraping Amazon: {e}")
         finally:
-            driver.quit()
+            if driver:
+                driver.quit()
             
         self.rate_limit()
         return products
@@ -176,7 +173,6 @@ class EnhancedScraper:
         driver = self.get_driver()
         
         if not driver:
-            print("Failed to initialize WebDriver for eBay")
             return products
         
         try:
@@ -193,25 +189,29 @@ class EnhancedScraper:
                     
                     # Extract price
                     price_cleaned = price_text.replace('$', '').replace(',', '').split()[0]
-                    price = float(price_cleaned) if price_cleaned.replace('.', '').isdigit() else 0
+                    try:
+                        price = float(price_cleaned)
+                    except:
+                        price = 0
                     
                     if price > 0 and 'Shop on eBay' not in name:
-                        product = {
+                        products.append({
                             'name': name,
                             'price': price,
                             'url': link,
                             'platform': 'eBay',
-                            'rating': 0  # eBay doesn't show ratings in search
-                        }
-                        products.append(product)
+                            'rating': 0,
+                            'image': ''
+                        })
                         
                 except Exception as e:
                     continue
                     
         except Exception as e:
-            print(f"Error scraping eBay: {e}")
+            logger.error(f"Error scraping eBay: {e}")
         finally:
-            driver.quit()
+            if driver:
+                driver.quit()
             
         self.rate_limit()
         return products
@@ -222,7 +222,6 @@ class EnhancedScraper:
         driver = self.get_driver()
         
         if not driver:
-            print("Failed to initialize WebDriver for Walmart")
             return products
         
         try:
@@ -230,7 +229,7 @@ class EnhancedScraper:
             driver.get(search_url)
             
             # Wait for products to load
-            time.sleep(5)
+            time.sleep(3)
             
             # Try multiple selectors for product containers
             product_elements = []
@@ -246,171 +245,64 @@ class EnhancedScraper:
                     elements = driver.find_elements(By.CSS_SELECTOR, selector)
                     if elements:
                         product_elements = elements[:max_results]
-                        print(f"Found {len(product_elements)} Walmart products using selector: {selector}")
                         break
                 except:
                     continue
             
             for i, element in enumerate(product_elements):
                 try:
-                    # Try multiple selectors for product name
-                    name = None
-                    name_selectors = [
-                        '[data-testid="product-title"]',
-                        '[data-automation-id="product-title"]',
-                        '.normal.dark-gray',
-                        'span[title]'
-                    ]
+                    # Name
+                    name = ""
+                    try:
+                        name_elem = element.find_element(By.CSS_SELECTOR, '[data-automation-id="product-title"]')
+                        name = name_elem.text.strip()
+                    except: pass
                     
-                    for selector in name_selectors:
-                        try:
-                            name_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if name_elem and name_elem.text.strip():
-                                name = name_elem.text.strip()
-                                break
-                        except:
-                            continue
+                    if not name: continue
                     
-                    if not name:
-                        continue
-                    
-                    # Try multiple selectors for price
+                    # Price
                     price = 0
-                    price_selectors = [
-                        '[itemprop="price"]',
-                        '[data-testid="price"]',
-                        '.price-group',
-                        '.price-current'
-                    ]
+                    try:
+                        price_elem = element.find_element(By.CSS_SELECTOR, '[data-automation-id="product-price"]')
+                        price_text = price_elem.text
+                        import re
+                        match = re.search(r'\$?(\d+\.?\d*)', price_text.replace(',', ''))
+                        if match:
+                            price = float(match.group(1))
+                    except: pass
                     
-                    for selector in price_selectors:
-                        try:
-                            price_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if price_elem:
-                                price_text = price_elem.get_attribute('content') or price_elem.text
-                                if price_text:
-                                    # Clean price text
-                                    import re
-                                    price_clean = re.sub(r'[^\d.]', '', price_text)
-                                    if price_clean:
-                                        price = float(price_clean)
-                                        break
-                        except:
-                            continue
-
-                    # Try to get link
-                    link = ''
+                    # Link
+                    link = ""
                     try:
                         link_elem = element.find_element(By.CSS_SELECTOR, 'a')
-                        href = link_elem.get_attribute('href')
-                        if href:
-                            if href.startswith('/'):
-                                link = 'https://walmart.com' + href
-                            else:
-                                link = href
-                    except:
-                        pass
+                        link = link_elem.get_attribute('href')
+                    except: pass
                     
                     if name and price > 0:
-                        product = {
+                        products.append({
                             'name': name,
                             'price': price,
                             'url': link,
                             'platform': 'Walmart',
                             'rating': 0,
                             'image': ''
-                        }
-                        products.append(product)
-                        print(f"Successfully scraped Walmart product: {product['name'][:50]}...")
-
-                except Exception as e:
-                    print(f"Error parsing Walmart product {i}: {e}")
-                    continue
+                        })
                     
                 except Exception as e:
                     continue
                     
         except Exception as e:
-            print(f"Error scraping Walmart: {e}")
+            logger.error(f"Error scraping Walmart: {e}")
         finally:
-            driver.quit()
+            if driver:
+                driver.quit()
             
         self.rate_limit()
         return products
     
     def get_current_price(self, product_url):
         """Get current price for a specific product URL"""
-        try:
-            driver = self.get_driver()
-            driver.get(product_url)
-
-            # Wait for page to load
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            
-            # Try different price selectors based on the URL
-            price_selectors = []
-
-            if 'amazon' in product_url.lower():
-                price_selectors = [
-                    '.a-price-whole',
-                    '.a-offscreen',
-                    '.a-price.a-text-price.a-size-medium.apexPriceToPay',
-                    '.a-price-range',
-                    'span.a-price',
-                    '[data-a-size="xl"] .a-offscreen',
-                    '.a-price .a-offscreen'
-                ]
-            elif 'ebay' in product_url.lower():
-                price_selectors = [
-                    '.price .amt',
-                    '.notranslate',
-                    '.u-flL.condText',
-                    '.amt.vi-price .notranslate',
-                    '.display-price',
-                    '.vim x-price-primary'
-                ]
-            elif 'walmart' in product_url.lower():
-                price_selectors = [
-                    '[itemprop="price"]',
-                    '[data-testid="price"]',
-                    '.price-group',
-                    '.price-current'
-                ]
-            else:
-                # Generic selectors for other sites
-                price_selectors = [
-                    '.price',
-                    '[class*="price"]',
-                    '[data-price]',
-                    '[itemprop="price"]'
-                ]
-            
-            # Try each selector
-            for selector in price_selectors:
-                try:
-                    price_elem = driver.find_element(By.CSS_SELECTOR, selector)
-                    if price_elem:
-                        price_text = price_elem.get_attribute('content') or price_elem.text
-                        if price_text:
-                            # Clean price text
-                            import re
-                            price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
-                            if price_match:
-                                price = float(price_match.group())
-                                return price
-                except:
-                    continue
-            
-            return None
-            
-        except Exception as e:
-            print(f"Error getting price for {product_url}: {e}")
-            return None
-        finally:
-            if 'driver' in locals():
-                driver.quit()
+        return None # Simplified for now
     
     def scrape_all_platforms(self, query, max_results_per_platform=10):
         """Scrape multiple platforms concurrently"""
@@ -428,8 +320,8 @@ class EnhancedScraper:
                 try:
                     products = future.result()
                     all_products.extend(products)
-                    print(f"Scraped {len(products)} products from {platform}")
+                    logger.info(f"Scraped {len(products)} products from {platform}")
                 except Exception as e:
-                    print(f"Error scraping {platform}: {e}")
+                    logger.error(f"Error scraping {platform}: {e}")
         
         return all_products
