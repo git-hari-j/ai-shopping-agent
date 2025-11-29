@@ -41,8 +41,8 @@ class PreferenceUpdate(BaseModel):
     language: Optional[str] = None
     preferred_brands: Optional[List[str]] = None
 
-# Security config
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Security config - Using Argon2 instead of bcrypt to avoid 72-byte limit
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)

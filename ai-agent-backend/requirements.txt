@@ -6,7 +6,7 @@ pydantic-settings
 asyncpg
 aiosqlite
 python-jose
-passlib[bcrypt]
+passlib[argon2]
 python-multipart
 email-validator
 requests
