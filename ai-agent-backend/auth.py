@@ -6,10 +6,11 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Union
 from database import get_db
 from models import User, UserPreference
 from config import settings
+import uuid
 
 # Helper Models
 class UserCreate(BaseModel):
@@ -22,7 +23,7 @@ class UserLogin(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
-    id: int
+    id: Union[uuid.UUID, int, str]
     username: str
     email: str
     created_at: datetime
@@ -76,7 +77,19 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
     except JWTError:
         raise credentials_exception
         
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    # Handle UUID vs Int ID
+    try:
+        # Try as UUID first if it looks like one
+        uid = uuid.UUID(user_id)
+        result = await db.execute(select(User).where(User.id == uid))
+    except ValueError:
+        # Fallback to int if not UUID
+        try:
+            uid = int(user_id)
+            result = await db.execute(select(User).where(User.id == uid))
+        except ValueError:
+            raise credentials_exception
+
     user = result.scalars().first()
     if user is None:
         raise credentials_exception
@@ -93,6 +106,7 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email or Username already registered")
 
     hashed_password = get_password_hash(user_in.password)
+    # User ID is auto-generated via default=uuid.uuid4 in model
     new_user = User(username=user_in.username, email=user_in.email, password_hash=hashed_password)
     db.add(new_user)
     await db.commit()

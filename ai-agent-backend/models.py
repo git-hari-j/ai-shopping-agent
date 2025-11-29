@@ -1,12 +1,13 @@
-from sqlalchemy import Column, Integer, String, Float, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Text, Boolean, DateTime, ForeignKey, Uuid
 from sqlalchemy.orm import relationship
 from datetime import datetime
+import uuid
 from database import Base
 
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Uuid, primary_key=True, index=True, default=uuid.uuid4)
     username = Column(String(80), unique=True, nullable=False, index=True)
     email = Column(String(120), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
@@ -22,7 +23,7 @@ class UserPreference(Base):
     __tablename__ = "user_preferences"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
     min_price = Column(Float, default=0)
     max_price = Column(Float, default=10000)
     preferred_brands = Column(Text)  # JSON string
@@ -36,7 +37,7 @@ class SearchHistory(Base):
     __tablename__ = "search_history"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
     query = Column(String(200), nullable=False)
     budget = Column(Float)
     results_count = Column(Integer)
@@ -48,7 +49,7 @@ class Favorite(Base):
     __tablename__ = "favorites"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
     product_name = Column(String(200), nullable=False)
     product_url = Column(Text, nullable=False)
     price = Column(Float)
@@ -61,7 +62,7 @@ class PriceAlert(Base):
     __tablename__ = "price_alert"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    user_id = Column(Uuid, ForeignKey('users.id'), nullable=False)
     product_name = Column(String(200), nullable=False)
     product_url = Column(Text, nullable=False)
     target_price = Column(Float, nullable=False)

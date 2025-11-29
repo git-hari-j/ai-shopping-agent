@@ -56,7 +56,6 @@ __pycache__/
 # API Keys (important for security)
 *api-key*
 *API_KEY*
-config.py
 
 # Selenium drivers
 chromedriver
