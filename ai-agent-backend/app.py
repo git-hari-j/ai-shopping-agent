@@ -1,254 +1,353 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import os
-from dotenv import load_dotenv
+from fastapi import FastAPI, Depends, HTTPException, status, Body
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc, delete
+from sqlalchemy.orm import selectinload
+from typing import List, Optional
+from pydantic import BaseModel
+import logging
+from contextlib import asynccontextmanager
 
-# Load environment variables
-load_dotenv()
-
-# Initialize Flask app
-app = Flask(__name__)
-CORS(app)
-
-# Database configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///shopping_agent.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
-
-# Import models and initialize database
-from models import db, User, UserPreference, SearchHistory, Favorite, PriceAlert
-
-# Initialize database with app
-db.init_app(app)
-
-# Import auth and other managers
-from auth import AuthManager
-from price_alerts import PriceAlertManager
+from config import settings
+from database import engine, Base, get_db
+from models import User, SearchHistory, Favorite, PriceAlert
+from auth import router as auth_router, get_current_user
+from core.llm import LLMFactory
 from enhanced_scraper import EnhancedScraper
-from analytics import create_analytics_routes
-from ml_engine import create_ml_routes  
-from email_service import create_email_routes
-from data_processing import create_data_processing_routes
-from advanced_recommendations import create_advanced_recommendation_routes
+from fastapi.concurrency import run_in_threadpool
 
-# Initialize managers
-auth_manager = AuthManager(app, db)
-price_alert_manager = PriceAlertManager(app)
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Lifecycle manager
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    # Shutdown
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="AI Shopping Agent",
+    description="Backend API for AI Shopping Agent",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include Auth Router
+app.include_router(auth_router)
+
+# Initialize Scraper
 scraper = EnhancedScraper()
 
-# Register authentication routes
-auth_manager.register_routes()
-price_alert_manager.register_routes(auth_manager)
+# --- Pydantic Models for Requests/Responses ---
 
-# Register additional module routes
-create_analytics_routes(app, db)
-create_ml_routes(app, db)
-create_email_routes(app, db)
-create_data_processing_routes(app, db)
-create_advanced_recommendation_routes(app, db)
+class RecommendRequest(BaseModel):
+    product: str
+    budget: float
+    use_nlp: bool = False
+    currency: str = "USD"
 
-# Create database tables
-with app.app_context():
-    db.create_all()
+class Product(BaseModel):
+    name: str
+    price: float
+    rating: float
+    image: str
+    url: str
+    platform: str
 
-# Basic product recommendation endpoint
-@app.route("/api/auth/recommend", methods=["POST"])
-@auth_manager.require_auth
-def recommend():
-    try:
-        data = request.json
-        budget = float(data.get("budget", 0))
-        product_type = data.get("product", "").lower()
-        use_nlp = data.get("use_nlp", False)
-        currency = data.get("currency", "USD")
+class SearchHistoryResponse(BaseModel):
+    id: int
+    query: str
+    budget: float
+    results_count: Optional[int]
+    timestamp: str  # ISO format
 
-        if not product_type or budget <= 0:
-            return jsonify({"error": "Please provide valid product and budget"}), 400
+class FavoriteCreate(BaseModel):
+    product_name: str
+    product_url: str
+    price: float
+    platform: str
 
-        # Save search to history
-        search_history = SearchHistory(
-            user_id=request.current_user_id,
-            query=product_type,
-            budget=budget
-        )
-        db.session.add(search_history)
-        db.session.commit()
+class FavoriteResponse(BaseModel):
+    id: int
+    product_name: str
+    product_url: str
+    price: Optional[float]
+    platform: Optional[str]
+    added_at: str
 
-        # Use enhanced scraper to get products
-        products = scraper.scrape_all_platforms(product_type, max_results_per_platform=5)
-        
-        # Filter by budget
-        filtered_products = [
-            product for product in products 
-            if product.get("price", 0) <= budget
-        ]
+class PriceAlertCreate(BaseModel):
+    product_name: str
+    product_url: str
+    target_price: float
 
-        # If we have very few results, add some sample/demo products
-        if len(filtered_products) < 3:
-            sample_products = [
-                {
-                    "name": f"Sample {product_type.title()} - Basic Model",
-                    "price": budget * 0.6,
-                    "rating": 4.2,
-                    "image": "",
-                    "url": "https://example.com/product1",
-                    "platform": "Demo Store"
-                },
-                {
-                    "name": f"Premium {product_type.title()} - Advanced Features",
-                    "price": budget * 0.8,
-                    "rating": 4.5,
-                    "image": "",
-                    "url": "https://example.com/product2", 
-                    "platform": "Demo Store"
-                },
-                {
-                    "name": f"Budget {product_type.title()} - Great Value",
-                    "price": budget * 0.4,
-                    "rating": 4.0,
-                    "image": "",
-                    "url": "https://example.com/product3",
-                    "platform": "Demo Store"
-                }
-            ]
-            
-            # Add sample products that fit the budget
-            for sample in sample_products:
-                if sample["price"] <= budget:
-                    filtered_products.append(sample)
+class PriceAlertResponse(BaseModel):
+    id: int
+    product_name: str
+    product_url: str
+    target_price: float
+    current_price: Optional[float]
+    is_active: bool
+    created_at: str
 
-        # Update search history with results count
-        search_history.results_count = len(filtered_products)
-        db.session.commit()
+# --- Endpoints ---
 
-        # Sort by price
-        filtered_products.sort(key=lambda x: x.get("price", 0))
-
-        return jsonify(filtered_products[:15])  # Return top 15 results
-
-    except Exception as e:
-        print(f"Error in recommend: {e}")
-        return jsonify({"error": "Search failed. Please try again."}), 500
-
-# Get user's search history
-@app.route("/api/auth/search-history", methods=["GET"])
-@auth_manager.require_auth
-def get_search_history():
-    try:
-        history = SearchHistory.query.filter_by(
-            user_id=request.current_user_id
-        ).order_by(SearchHistory.timestamp.desc()).limit(10).all()
-        
-        return jsonify([{
-            'id': h.id,
-            'query': h.query,
-            'budget': h.budget,
-            'results_count': h.results_count,
-            'timestamp': h.timestamp.isoformat()
-        } for h in history])
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Add product to favorites
-@app.route("/api/favorites", methods=["POST"])
-@auth_manager.require_auth
-def add_favorite():
-    try:
-        data = request.json
-        
-        # Check if already in favorites
-        existing = Favorite.query.filter_by(
-            user_id=request.current_user_id,
-            product_url=data['product_url']
-        ).first()
-        
-        if existing:
-            return jsonify({"message": "Already in favorites"}), 200
-        
-        favorite = Favorite(
-            user_id=request.current_user_id,
-            product_name=data['product_name'],
-            product_url=data['product_url'],
-            price=data.get('price'),
-            platform=data.get('platform')
-        )
-        
-        db.session.add(favorite)
-        db.session.commit()
-        
-        return jsonify({"message": "Added to favorites successfully"}), 201
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Get user's favorites
-@app.route("/api/favorites", methods=["GET"])
-@auth_manager.require_auth
-def get_favorites():
-    try:
-        favorites = Favorite.query.filter_by(
-            user_id=request.current_user_id
-        ).order_by(Favorite.added_at.desc()).all()
-        
-        return jsonify([{
-            'id': f.id,
-            'product_name': f.product_name,
-            'product_url': f.product_url,
-            'price': f.price,
-            'platform': f.platform,
-            'added_at': f.added_at.isoformat()
-        } for f in favorites])
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Remove from favorites
-@app.route("/api/favorites/<int:favorite_id>", methods=["DELETE"])
-@auth_manager.require_auth
-def remove_favorite(favorite_id):
-    try:
-        favorite = Favorite.query.filter_by(
-            id=favorite_id,
-            user_id=request.current_user_id
-        ).first()
-        
-        if not favorite:
-            return jsonify({"error": "Favorite not found"}), 404
-        
-        db.session.delete(favorite)
-        db.session.commit()
-        
-        return jsonify({"message": "Removed from favorites"})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Health check endpoint
-@app.route("/api/health", methods=["GET"])
+@app.get("/api/health")
 def health_check():
-    return jsonify({
+    return {
         "status": "healthy",
-        "message": "AI Shopping Agent Backend is running!"
-    })
+        "message": "AI Shopping Agent Backend is running!",
+        "version": "2.0.0"
+    }
 
-# Test endpoint (no auth required)
-@app.route("/api/test", methods=["GET"])
+@app.get("/api/test")
 def test():
-    return jsonify({
+    return {
         "message": "Backend is working!",
         "available_endpoints": [
             "/api/auth/register",
-            "/api/auth/login", 
+            "/api/auth/login",
             "/api/auth/profile",
             "/api/auth/recommend",
             "/api/favorites",
             "/api/price-alerts"
         ]
-    })
+    }
+
+@app.post("/api/auth/recommend", response_model=List[Product])
+async def recommend(
+    req: RecommendRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    if not req.product or req.budget <= 0:
+        raise HTTPException(status_code=400, detail="Please provide valid product and budget")
+
+    search_query = req.product
+    
+    # LLM Query Refinement
+    if req.use_nlp:
+        try:
+            llm = LLMFactory.get_llm()
+            prompt = f"Convert this user request into a specific product search query for an e-commerce site. Return ONLY the search terms, no quotes or explanation. Request: {req.product}"
+            refined_query = await llm.generate(prompt)
+            search_query = refined_query.strip()
+            logger.info(f"LLM Refined Query: '{req.product}' -> '{search_query}'")
+        except Exception as e:
+            logger.error(f"LLM Error: {e}")
+            # Fallback to original query
+            search_query = req.product
+
+    # Scrape Products (run in threadpool to avoid blocking)
+    try:
+        # Note: scraper.scrape_all_platforms uses ThreadPoolExecutor internally but waits for it.
+        # So we wrap the whole call in run_in_threadpool to offload it from the main event loop.
+        products = await run_in_threadpool(
+            scraper.scrape_all_platforms,
+            search_query,
+            max_results_per_platform=5
+        )
+    except Exception as e:
+        logger.error(f"Scraping failed: {e}")
+        raise HTTPException(status_code=500, detail="Search failed. Please try again.")
+
+    # Filter by budget
+    filtered_products = [
+        p for p in products
+        if p.get("price", 0) <= req.budget
+    ]
+    
+    # Sort by price
+    filtered_products.sort(key=lambda x: x.get("price", 0))
+
+    # Save search history
+    # Create object directly; relationship expects User object if back_populates is used,
+    # but setting foreign key ID is safer/easier with async session sometimes.
+    # Here we set user_id directly.
+    history_entry = SearchHistory(
+        user_id=current_user.id,
+        query=search_query,
+        budget=req.budget,
+        results_count=len(filtered_products)
+    )
+    db.add(history_entry)
+    await db.commit()
+
+    return filtered_products[:15]
+
+@app.get("/api/auth/search-history", response_model=List[SearchHistoryResponse])
+async def get_search_history(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(SearchHistory)
+        .where(SearchHistory.user_id == current_user.id)
+        .order_by(desc(SearchHistory.timestamp))
+        .limit(10)
+    )
+    history = result.scalars().all()
+
+    return [
+        SearchHistoryResponse(
+            id=h.id,
+            query=h.query,
+            budget=h.budget,
+            results_count=h.results_count,
+            timestamp=h.timestamp.isoformat()
+        ) for h in history
+    ]
+
+@app.post("/api/favorites", status_code=status.HTTP_201_CREATED)
+async def add_favorite(
+    fav: FavoriteCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Check if exists
+    result = await db.execute(
+        select(Favorite).where(
+            (Favorite.user_id == current_user.id) &
+            (Favorite.product_url == fav.product_url)
+        )
+    )
+    if result.scalars().first():
+        return {"message": "Already in favorites"}
+
+    new_fav = Favorite(
+        user_id=current_user.id,
+        product_name=fav.product_name,
+        product_url=fav.product_url,
+        price=fav.price,
+        platform=fav.platform
+    )
+    db.add(new_fav)
+    await db.commit()
+
+    return {"message": "Added to favorites successfully"}
+
+@app.get("/api/favorites", response_model=List[FavoriteResponse])
+async def get_favorites(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Favorite)
+        .where(Favorite.user_id == current_user.id)
+        .order_by(desc(Favorite.added_at))
+    )
+    favorites = result.scalars().all()
+
+    return [
+        FavoriteResponse(
+            id=f.id,
+            product_name=f.product_name,
+            product_url=f.product_url,
+            price=f.price,
+            platform=f.platform,
+            added_at=f.added_at.isoformat()
+        ) for f in favorites
+    ]
+
+@app.delete("/api/favorites/{favorite_id}")
+async def remove_favorite(
+    favorite_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Favorite).where(
+            (Favorite.id == favorite_id) &
+            (Favorite.user_id == current_user.id)
+        )
+    )
+    favorite = result.scalars().first()
+
+    if not favorite:
+        raise HTTPException(status_code=404, detail="Favorite not found")
+        
+    await db.delete(favorite)
+    await db.commit()
+    
+    return {"message": "Removed from favorites"}
+
+# Price Alerts Endpoints (migrated logic from price_alerts.py implicitly or explicitly)
+@app.post("/api/price-alerts", status_code=status.HTTP_201_CREATED)
+async def create_price_alert(
+    alert: PriceAlertCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    new_alert = PriceAlert(
+        user_id=current_user.id,
+        product_name=alert.product_name,
+        product_url=alert.product_url,
+        target_price=alert.target_price,
+        current_price=None # Will be updated by background job
+    )
+    db.add(new_alert)
+    await db.commit()
+    return {"message": "Price alert created"}
+
+@app.get("/api/price-alerts", response_model=List[PriceAlertResponse])
+async def get_price_alerts(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(PriceAlert)
+        .where(PriceAlert.user_id == current_user.id)
+        .order_by(desc(PriceAlert.created_at))
+    )
+    alerts = result.scalars().all()
+
+    return [
+        PriceAlertResponse(
+            id=a.id,
+            product_name=a.product_name,
+            product_url=a.product_url,
+            target_price=a.target_price,
+            current_price=a.current_price,
+            is_active=a.is_active,
+            created_at=a.created_at.isoformat()
+        ) for a in alerts
+    ]
+
+@app.delete("/api/price-alerts/{alert_id}")
+async def delete_price_alert(
+    alert_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(PriceAlert).where(
+            (PriceAlert.id == alert_id) &
+            (PriceAlert.user_id == current_user.id)
+        )
+    )
+    alert = result.scalars().first()
+
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    await db.delete(alert)
+    await db.commit()
+
+    return {"message": "Price alert deleted"}
 
 if __name__ == "__main__":
-    print("🚀 Starting AI Shopping Agent Backend...")
-    print("📡 Available at: http://127.0.0.1:5000")
-    print("🔗 Test endpoint: http://127.0.0.1:5000/api/test")
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    import uvicorn
+    uvicorn.run("app:app", host="127.0.0.1", port=5000, reload=True)

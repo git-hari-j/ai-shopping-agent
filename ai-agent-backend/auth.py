@@ -1,174 +1,181 @@
-from flask import request, jsonify, session
-from werkzeug.security import generate_password_hash, check_password_hash
-from functools import wraps
-import jwt
-import datetime
-import os
-import json
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from pydantic import BaseModel, EmailStr
+from typing import Optional, List
+from database import get_db
+from models import User, UserPreference
+from config import settings
 
-class AuthManager:
-    def __init__(self, app, db):
-        self.app = app
-        self.db = db
-        self.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-here')
+# Helper Models
+class UserCreate(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class PreferenceUpdate(BaseModel):
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
+    currency: Optional[str] = None
+    language: Optional[str] = None
+    preferred_brands: Optional[List[str]] = None
+
+# Security config
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/login")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return encoded_jwt
+
+# Dependency
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
         
-    def generate_token(self, user_id):
-        """Generate JWT token for user"""
-        payload = {
-            'user_id': user_id,
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
+    result = await db.execute(select(User).where(User.id == int(user_id)))
+    user = result.scalars().first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+# Router
+router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+@router.post("/register", response_model=dict)
+async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
+    # Check existing user
+    result = await db.execute(select(User).where((User.email == user_in.email) | (User.username == user_in.username)))
+    if result.scalars().first():
+        raise HTTPException(status_code=400, detail="Email or Username already registered")
+
+    hashed_password = get_password_hash(user_in.password)
+    new_user = User(username=user_in.username, email=user_in.email, password_hash=hashed_password)
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    # Create default preferences
+    new_pref = UserPreference(user_id=new_user.id)
+    db.add(new_pref)
+    await db.commit()
+
+    # Generate token
+    access_token = create_access_token(data={"sub": str(new_user.id)})
+
+    return {
+        "message": "User registered successfully",
+        "token": access_token,
+        "user": {
+            "id": new_user.id,
+            "username": new_user.username,
+            "email": new_user.email
         }
-        return jwt.encode(payload, self.secret_key, algorithm='HS256')
+    }
+
+@router.post("/login", response_model=dict)
+async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == user_in.email))
+    user = result.scalars().first()
     
-    def verify_token(self, token):
-        """Verify JWT token"""
-        try:
-            payload = jwt.decode(token, self.secret_key, algorithms=['HS256'])
-            return payload['user_id']
-        except jwt.ExpiredSignatureError:
-            return None
-        except jwt.InvalidTokenError:
-            return None
+    if not user or not verify_password(user_in.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    def require_auth(self, f):
-        """Decorator to require authentication"""
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            token = request.headers.get('Authorization')
-            if not token:
-                return jsonify({'error': 'No token provided'}), 401
-            
-            if token.startswith('Bearer '):
-                token = token[7:]
-            
-            user_id = self.verify_token(token)
-            if not user_id:
-                return jsonify({'error': 'Invalid or expired token'}), 401
-            
-            request.current_user_id = user_id
-            return f(*args, **kwargs)
-        return decorated_function
+    access_token = create_access_token(data={"sub": str(user.id)})
     
-    def register_routes(self):
-        """Register authentication routes"""
+    return {
+        "message": "Login successful",
+        "token": access_token,
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email
+        }
+    }
+
+@router.get("/profile", response_model=dict)
+async def get_profile(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
+    preferences = result.scalars().first()
+
+    return {
+        "user": {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "created_at": current_user.created_at
+        },
+        "preferences": {
+            "min_price": preferences.min_price if preferences else 0,
+            "max_price": preferences.max_price if preferences else 10000,
+            "currency": preferences.currency if preferences else "USD",
+            "language": preferences.language if preferences else "en"
+        }
+    }
+
+@router.put("/preferences")
+async def update_preferences(pref_in: PreferenceUpdate, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(UserPreference).where(UserPreference.user_id == current_user.id))
+    preferences = result.scalars().first()
+
+    if not preferences:
+        preferences = UserPreference(user_id=current_user.id)
+        db.add(preferences)
+
+    if pref_in.min_price is not None:
+        preferences.min_price = pref_in.min_price
+    if pref_in.max_price is not None:
+        preferences.max_price = pref_in.max_price
+    if pref_in.currency is not None:
+        preferences.currency = pref_in.currency
+    if pref_in.language is not None:
+        preferences.language = pref_in.language
+    if pref_in.preferred_brands is not None:
+        import json
+        preferences.preferred_brands = json.dumps(pref_in.preferred_brands)
         
-        @self.app.route('/api/auth/register', methods=['POST'])
-        def register():
-            from models import User, UserPreference
-            
-            data = request.get_json()
-            username = data.get('username')
-            email = data.get('email')
-            password = data.get('password')
-            
-            if not all([username, email, password]):
-                return jsonify({'error': 'Missing required fields'}), 400
-            
-            # Check if user exists
-            if User.query.filter_by(email=email).first():
-                return jsonify({'error': 'Email already registered'}), 400
-            
-            if User.query.filter_by(username=username).first():
-                return jsonify({'error': 'Username already taken'}), 400
-            
-            # Create new user
-            hashed_password = generate_password_hash(password)
-            user = User(username=username, email=email, password_hash=hashed_password)
-            self.db.session.add(user)
-            self.db.session.commit()
-            
-            # Create default preferences
-            preferences = UserPreference(user_id=user.id)
-            self.db.session.add(preferences)
-            self.db.session.commit()
-            
-            token = self.generate_token(user.id)
-            
-            return jsonify({
-                'message': 'User registered successfully',
-                'token': token,
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'email': user.email
-                }
-            }), 201
-        
-        @self.app.route('/api/auth/login', methods=['POST'])
-        def login():
-            from models import User
-            
-            data = request.get_json()
-            email = data.get('email')
-            password = data.get('password')
-            
-            if not all([email, password]):
-                return jsonify({'error': 'Email and password required'}), 400
-            
-            user = User.query.filter_by(email=email).first()
-            
-            if not user or not check_password_hash(user.password_hash, password):
-                return jsonify({'error': 'Invalid credentials'}), 401
-            
-            token = self.generate_token(user.id)
-            
-            return jsonify({
-                'message': 'Login successful',
-                'token': token,
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'email': user.email
-                }
-            })
-        
-        @self.app.route('/api/auth/profile', methods=['GET'])
-        @self.require_auth
-        def get_profile():
-            from models import User, UserPreference
-            
-            user = User.query.get(request.current_user_id)
-            preferences = UserPreference.query.filter_by(user_id=user.id).first()
-            
-            return jsonify({
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'email': user.email,
-                    'created_at': user.created_at.isoformat()
-                },
-                'preferences': {
-                    'min_price': preferences.min_price if preferences else 0,
-                    'max_price': preferences.max_price if preferences else 10000,
-                    'currency': preferences.currency if preferences else 'USD',
-                    'language': preferences.language if preferences else 'en'
-                }
-            })
-        
-        @self.app.route('/api/auth/preferences', methods=['PUT'])
-        @self.require_auth
-        def update_preferences():
-            from models import UserPreference
-            
-            data = request.get_json()
-            preferences = UserPreference.query.filter_by(user_id=request.current_user_id).first()
-            
-            if not preferences:
-                preferences = UserPreference(user_id=request.current_user_id)
-                self.db.session.add(preferences)
-            
-            # Update preferences
-            if 'min_price' in data:
-                preferences.min_price = data['min_price']
-            if 'max_price' in data:
-                preferences.max_price = data['max_price']
-            if 'currency' in data:
-                preferences.currency = data['currency']
-            if 'language' in data:
-                preferences.language = data['language']
-            if 'preferred_brands' in data:
-                preferences.preferred_brands = json.dumps(data['preferred_brands'])
-            
-            self.db.session.commit()
-            
-            return jsonify({'message': 'Preferences updated successfully'})
+    await db.commit()
+    return {"message": "Preferences updated successfully"}

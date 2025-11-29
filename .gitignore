@@ -63,3 +63,5 @@ chromedriver
 chromedriver.exe
 geckodriver
 geckodriver.exe
+*.db
+*.log
