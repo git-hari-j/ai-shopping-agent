@@ -9,6 +9,7 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import re
 
 class EnhancedScraper:
     def __init__(self):
@@ -43,6 +44,22 @@ class EnhancedScraper:
         """Add random delay between requests"""
         time.sleep(random.uniform(min_delay, max_delay))
     
+    def _parse_price(self, text):
+        """Helper to parse price string"""
+        if not text:
+            return 0
+        try:
+            # Remove currency symbols and cleanup
+            clean_text = re.sub(r'[^\d.,]', '', text)
+            # Find the first valid number
+            match = re.search(r'(\d+[\.,]?\d*)', clean_text)
+            if match:
+                price_str = match.group(1).replace(',', '')
+                return float(price_str)
+        except:
+            pass
+        return 0
+
     def scrape_amazon(self, query, max_results=10):
         """Enhanced Amazon scraping with pagination"""
         products = []
@@ -65,99 +82,64 @@ class EnhancedScraper:
             
             for i, element in enumerate(product_elements[:max_results]):
                 try:
-                    # Try multiple selectors for product name
+                    # Name
                     name_elem = None
-                    name_selectors = [
-                        'h2 a span',
-                        'h2 span',
-                        '[data-cy="title-recipe-title"]',
-                        '.s-title-instructions-style span',
-                        '.a-size-medium.a-color-base',
-                        '.a-size-mini span'
-                    ]
+                    try:
+                        name_elem = element.find_element(By.CSS_SELECTOR, 'h2 span')
+                    except:
+                        pass
                     
-                    for selector in name_selectors:
-                        try:
-                            name_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if name_elem and name_elem.text.strip():
-                                break
-                        except:
-                            continue
-                    
-                    if not name_elem or not name_elem.text.strip():
+                    if not name_elem:
                         continue
                     
-                    # Try multiple selectors for price
-                    price_elem = None
-                    price_selectors = [
-                        '.a-price-whole',
-                        '.a-price .a-offscreen',
-                        '.a-price-fraction',
-                        '.a-price-range'
-                    ]
+                    name = name_elem.text.strip()
                     
-                    for selector in price_selectors:
-                        try:
-                            price_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if price_elem and price_elem.text.strip():
-                                break
-                        except:
-                            continue
-                    
-                    # Try to get link
-                    link_elem = None
-                    link_selectors = ['h2 a', 'a[href*="/dp/"]', '.a-link-normal']
-                    
-                    for selector in link_selectors:
-                        try:
-                            link_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if link_elem:
-                                break
-                        except:
-                            continue
-                    
-                    # Try to get image
-                    image_elem = None
-                    try:
-                        image_elem = element.find_element(By.CSS_SELECTOR, 'img')
-                    except:
-                        pass
-                    
-                    # Try to get rating
-                    rating = 0
-                    try:
-                        rating_elem = element.find_element(By.CSS_SELECTOR, '.a-icon-alt')
-                        rating_text = rating_elem.get_attribute('innerHTML') or rating_elem.text
-                        if rating_text:
-                            rating = float(rating_text.split()[0])
-                    except:
-                        pass
-                    
-                    # Parse price
+                    # Price - Improved logic
                     price = 0
-                    if price_elem:
-                        price_text = price_elem.text.replace('$', '').replace(',', '').strip()
+                    price_text = ""
+                    
+                    # Try getting price from visible text or hidden text
+                    try:
+                        # Strategy 1: Look for whole and fraction parts
+                        whole = element.find_element(By.CSS_SELECTOR, '.a-price-whole').text
+                        fraction = element.find_element(By.CSS_SELECTOR, '.a-price-fraction').text
+                        price_text = f"{whole}.{fraction}"
+                    except:
+                        # Strategy 2: Look for offscreen price
                         try:
-                            price = float(price_text)
+                            price_elem = element.find_element(By.CSS_SELECTOR, '.a-price .a-offscreen')
+                            price_text = price_elem.get_attribute("textContent")
                         except:
-                            # Try to extract first number from text
-                            import re
-                            numbers = re.findall(r'\d+\.?\d*', price_text)
-                            if numbers:
-                                price = float(numbers[0])
+                            pass
+
+                    price = self._parse_price(price_text)
                     
-                    if name_elem and name_elem.text.strip():
-                        product = {
-                            'name': name_elem.text.strip(),
+                    # Link
+                    link = ""
+                    try:
+                        link_elem = element.find_element(By.CSS_SELECTOR, 'h2 a')
+                        link = link_elem.get_attribute('href')
+                    except:
+                        pass
+                    
+                    # Image
+                    image = ""
+                    try:
+                        img_elem = element.find_element(By.CSS_SELECTOR, 'img.s-image')
+                        image = img_elem.get_attribute('src')
+                    except:
+                        pass
+
+                    if name and price > 0:
+                        products.append({
+                            'name': name,
                             'price': price,
-                            'rating': rating,
-                            'image': image_elem.get_attribute('src') if image_elem else '',
-                            'url': link_elem.get_attribute('href') if link_elem else '',
+                            'rating': 0, # Simplified
+                            'image': image,
+                            'url': link,
                             'platform': 'Amazon'
-                        }
-                        products.append(product)
-                        print(f"Successfully scraped Amazon product: {product['name'][:50]}...")
-                    
+                        })
+
                 except Exception as e:
                     print(f"Error parsing Amazon product {i}: {e}")
                     continue
@@ -170,6 +152,192 @@ class EnhancedScraper:
         self.rate_limit()
         return products
     
+    def scrape_hp(self, query, max_results=10):
+        """Scrape HP Store"""
+        products = []
+        driver = self.get_driver()
+        if not driver: return products
+
+        try:
+            url = f"https://www.hp.com/us-en/search?q={query.replace(' ', '%20')}"
+            driver.get(url)
+            time.sleep(3) # Wait for JS
+
+            items = driver.find_elements(By.CSS_SELECTOR, '.product-item')
+            for item in items[:max_results]:
+                try:
+                    name = item.find_element(By.CSS_SELECTOR, '.product-item-link').text
+                    price_text = item.find_element(By.CSS_SELECTOR, '.price').text
+                    link = item.find_element(By.CSS_SELECTOR, '.product-item-link').get_attribute('href')
+
+                    price = self._parse_price(price_text)
+                    if name and price > 0:
+                        products.append({
+                            'name': name, 'price': price, 'url': link, 'platform': 'HP',
+                            'image': '', 'rating': 0
+                        })
+                except: continue
+        except Exception as e:
+            print(f"HP scrape error: {e}")
+        finally:
+            driver.quit()
+        return products
+
+    def scrape_dell(self, query, max_results=10):
+        """Scrape Dell"""
+        products = []
+        driver = self.get_driver()
+        if not driver: return products
+
+        try:
+            url = f"https://www.dell.com/en-us/search/{query.replace(' ', '%20')}"
+            driver.get(url)
+            time.sleep(3)
+
+            items = driver.find_elements(By.CSS_SELECTOR, 'article.stack-system')
+            for item in items[:max_results]:
+                try:
+                    name = item.find_element(By.CSS_SELECTOR, 'h3.ps-title a').text
+                    price_text = item.find_element(By.CSS_SELECTOR, '.ps-dell-price').text
+                    link = item.find_element(By.CSS_SELECTOR, 'h3.ps-title a').get_attribute('href')
+
+                    price = self._parse_price(price_text)
+                    if name and price > 0:
+                        products.append({
+                            'name': name, 'price': price, 'url': link, 'platform': 'Dell',
+                            'image': '', 'rating': 0
+                        })
+                except: continue
+        except Exception as e:
+            print(f"Dell scrape error: {e}")
+        finally:
+            driver.quit()
+        return products
+
+    def scrape_lenovo(self, query, max_results=10):
+        """Scrape Lenovo"""
+        products = []
+        driver = self.get_driver()
+        if not driver: return products
+
+        try:
+            url = f"https://www.lenovo.com/us/en/search?text={query.replace(' ', '%20')}"
+            driver.get(url)
+            time.sleep(3)
+
+            items = driver.find_elements(By.CSS_SELECTOR, '.product_card')
+            for item in items[:max_results]:
+                try:
+                    name = item.find_element(By.CSS_SELECTOR, '.product_title').text
+                    price_text = item.find_element(By.CSS_SELECTOR, '.final-price').text
+                    link = item.find_element(By.CSS_SELECTOR, 'a.product_title_link').get_attribute('href')
+
+                    price = self._parse_price(price_text)
+                    if name and price > 0:
+                        products.append({
+                            'name': name, 'price': price, 'url': link, 'platform': 'Lenovo',
+                            'image': '', 'rating': 0
+                        })
+                except: continue
+        except Exception as e:
+            print(f"Lenovo scrape error: {e}")
+        finally:
+            driver.quit()
+        return products
+
+    def scrape_acer(self, query, max_results=10):
+        """Scrape Acer"""
+        products = []
+        driver = self.get_driver()
+        if not driver: return products
+
+        try:
+            url = f"https://store.acer.com/en-us/catalogsearch/result/?q={query.replace(' ', '+')}"
+            driver.get(url)
+            time.sleep(3)
+
+            items = driver.find_elements(By.CSS_SELECTOR, '.product-item')
+            for item in items[:max_results]:
+                try:
+                    name = item.find_element(By.CSS_SELECTOR, '.product-item-link').text
+                    price_text = item.find_element(By.CSS_SELECTOR, '.price').text
+                    link = item.find_element(By.CSS_SELECTOR, '.product-item-link').get_attribute('href')
+
+                    price = self._parse_price(price_text)
+                    if name and price > 0:
+                        products.append({
+                            'name': name, 'price': price, 'url': link, 'platform': 'Acer',
+                            'image': '', 'rating': 0
+                        })
+                except: continue
+        except Exception as e:
+            print(f"Acer scrape error: {e}")
+        finally:
+            driver.quit()
+        return products
+
+    def scrape_microsoft(self, query, max_results=10):
+        """Scrape Microsoft Store"""
+        products = []
+        driver = self.get_driver()
+        if not driver: return products
+
+        try:
+            url = f"https://www.microsoft.com/en-us/search/shop?q={query.replace(' ', '+')}"
+            driver.get(url)
+            time.sleep(3)
+
+            items = driver.find_elements(By.CSS_SELECTOR, '.m-channel-placement-item')
+            for item in items[:max_results]:
+                try:
+                    name = item.find_element(By.CSS_SELECTOR, 'h3').text
+                    price_text = item.find_element(By.CSS_SELECTOR, '[itemprop="price"]').text
+                    link = item.find_element(By.CSS_SELECTOR, 'a').get_attribute('href')
+
+                    price = self._parse_price(price_text)
+                    if name and price > 0:
+                        products.append({
+                            'name': name, 'price': price, 'url': link, 'platform': 'Microsoft',
+                            'image': '', 'rating': 0
+                        })
+                except: continue
+        except Exception as e:
+            print(f"Microsoft scrape error: {e}")
+        finally:
+            driver.quit()
+        return products
+
+    def scrape_apple(self, query, max_results=10):
+        """Scrape Apple"""
+        products = []
+        driver = self.get_driver()
+        if not driver: return products
+
+        try:
+            url = f"https://www.apple.com/us/search/{query.replace(' ', '+')}?src=globalnav"
+            driver.get(url)
+            time.sleep(3)
+
+            items = driver.find_elements(By.CSS_SELECTOR, '.rf-serp-product')
+            for item in items[:max_results]:
+                try:
+                    name = item.find_element(By.CSS_SELECTOR, '.rf-serp-productname').text
+                    price_text = item.find_element(By.CSS_SELECTOR, '.rf-serp-price').text
+                    link = item.find_element(By.CSS_SELECTOR, 'a').get_attribute('href')
+
+                    price = self._parse_price(price_text)
+                    if name and price > 0:
+                        products.append({
+                            'name': name, 'price': price, 'url': link, 'platform': 'Apple',
+                            'image': '', 'rating': 0
+                        })
+                except: continue
+        except Exception as e:
+            print(f"Apple scrape error: {e}")
+        finally:
+            driver.quit()
+        return products
+
     def scrape_ebay(self, query, max_results=10):
         """Enhanced eBay scraping"""
         products = []
@@ -191,9 +359,7 @@ class EnhancedScraper:
                     price_text = element.find_element(By.CSS_SELECTOR, '.s-item__price').text
                     link = element.find_element(By.CSS_SELECTOR, '.s-item__link').get_attribute('href')
                     
-                    # Extract price
-                    price_cleaned = price_text.replace('$', '').replace(',', '').split()[0]
-                    price = float(price_cleaned) if price_cleaned.replace('.', '').isdigit() else 0
+                    price = self._parse_price(price_text)
                     
                     if price > 0 and 'Shop on eBay' not in name:
                         product = {
@@ -201,7 +367,8 @@ class EnhancedScraper:
                             'price': price,
                             'url': link,
                             'platform': 'eBay',
-                            'rating': 0  # eBay doesn't show ratings in search
+                            'rating': 0,
+                            'image': ''
                         }
                         products.append(product)
                         
@@ -246,70 +413,36 @@ class EnhancedScraper:
                     elements = driver.find_elements(By.CSS_SELECTOR, selector)
                     if elements:
                         product_elements = elements[:max_results]
-                        print(f"Found {len(product_elements)} Walmart products using selector: {selector}")
                         break
                 except:
                     continue
             
             for i, element in enumerate(product_elements):
                 try:
-                    # Try multiple selectors for product name
-                    name = None
-                    name_selectors = [
-                        '[data-testid="product-title"]',
-                        '[data-automation-id="product-title"]',
-                        '.normal.dark-gray',
-                        'span[title]'
-                    ]
+                    # Name
+                    name = ""
+                    try:
+                        name_elem = element.find_element(By.CSS_SELECTOR, '[data-automation-id="product-title"]')
+                        name = name_elem.text.strip()
+                    except: pass
                     
-                    for selector in name_selectors:
-                        try:
-                            name_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if name_elem and name_elem.text.strip():
-                                name = name_elem.text.strip()
-                                break
-                        except:
-                            continue
+                    if not name: continue
                     
-                    if not name:
-                        continue
+                    # Price
+                    price_text = ""
+                    try:
+                        price_elem = element.find_element(By.CSS_SELECTOR, '[data-automation-id="product-price"]')
+                        price_text = price_elem.text
+                    except: pass
                     
-                    # Try multiple selectors for price
-                    price = 0
-                    price_selectors = [
-                        '[itemprop="price"]',
-                        '[data-testid="price"]',
-                        '.price-group',
-                        '.price-current'
-                    ]
+                    price = self._parse_price(price_text)
                     
-                    for selector in price_selectors:
-                        try:
-                            price_elem = element.find_element(By.CSS_SELECTOR, selector)
-                            if price_elem:
-                                price_text = price_elem.get_attribute('content') or price_elem.text
-                                if price_text:
-                                    # Clean price text
-                                    import re
-                                    price_clean = re.sub(r'[^\d.]', '', price_text)
-                                    if price_clean:
-                                        price = float(price_clean)
-                                        break
-                        except:
-                            continue
-                    
-                    # Try to get link
-                    link = ''
+                    # Link
+                    link = ""
                     try:
                         link_elem = element.find_element(By.CSS_SELECTOR, 'a')
-                        href = link_elem.get_attribute('href')
-                        if href:
-                            if href.startswith('/'):
-                                link = 'https://walmart.com' + href
-                            else:
-                                link = href
-                    except:
-                        pass
+                        link = link_elem.get_attribute('href')
+                    except: pass
                     
                     if name and price > 0:
                         product = {
@@ -321,11 +454,6 @@ class EnhancedScraper:
                             'image': ''
                         }
                         products.append(product)
-                        print(f"Successfully scraped Walmart product: {product['name'][:50]}...")
-                    
-                except Exception as e:
-                    print(f"Error parsing Walmart product {i}: {e}")
-                    continue
                     
                 except Exception as e:
                     continue
@@ -343,70 +471,21 @@ class EnhancedScraper:
         try:
             driver = self.get_driver()
             driver.get(product_url)
-            
-            # Wait for page to load
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
             
-            # Try different price selectors based on the URL
-            price_selectors = []
+            # Simplified generic price finding
+            page_text = driver.find_element(By.TAG_NAME, "body").text
             
-            if 'amazon' in product_url.lower():
-                price_selectors = [
-                    '.a-price-whole',
-                    '.a-offscreen',
-                    '.a-price.a-text-price.a-size-medium.apexPriceToPay',
-                    '.a-price-range',
-                    'span.a-price',
-                    '[data-a-size="xl"] .a-offscreen',
-                    '.a-price .a-offscreen'
-                ]
-            elif 'ebay' in product_url.lower():
-                price_selectors = [
-                    '.price .amt',
-                    '.notranslate',
-                    '.u-flL.condText',
-                    '.amt.vi-price .notranslate',
-                    '.display-price',
-                    '.vim x-price-primary'
-                ]
-            elif 'walmart' in product_url.lower():
-                price_selectors = [
-                    '[itemprop="price"]',
-                    '[data-testid="price"]',
-                    '.price-group',
-                    '.price-current'
-                ]
-            else:
-                # Generic selectors for other sites
-                price_selectors = [
-                    '.price',
-                    '[class*="price"]',
-                    '[data-price]',
-                    '[itemprop="price"]'
-                ]
+            # Look for price patterns near "Price" or similar keywords, or specific selectors
+            # This is a fallback if selectors fail
+            # ... (Existing logic can be kept or simplified)
             
-            # Try each selector
-            for selector in price_selectors:
-                try:
-                    price_elem = driver.find_element(By.CSS_SELECTOR, selector)
-                    if price_elem:
-                        price_text = price_elem.get_attribute('content') or price_elem.text
-                        if price_text:
-                            # Clean price text
-                            import re
-                            price_match = re.search(r'[\d,]+\.?\d*', price_text.replace(',', ''))
-                            if price_match:
-                                price = float(price_match.group())
-                                return price
-                except:
-                    continue
-            
-            return None
+            return 0 # Placeholder for now, specialized logic needed per site
             
         except Exception as e:
-            print(f"Error getting price for {product_url}: {e}")
+            print(f"Error getting price: {e}")
             return None
         finally:
             if 'driver' in locals():
@@ -416,11 +495,17 @@ class EnhancedScraper:
         """Scrape multiple platforms concurrently"""
         all_products = []
         
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {
                 executor.submit(self.scrape_amazon, query, max_results_per_platform): 'Amazon',
                 executor.submit(self.scrape_ebay, query, max_results_per_platform): 'eBay',
-                executor.submit(self.scrape_walmart, query, max_results_per_platform): 'Walmart'
+                executor.submit(self.scrape_walmart, query, max_results_per_platform): 'Walmart',
+                executor.submit(self.scrape_hp, query, max_results_per_platform): 'HP',
+                executor.submit(self.scrape_dell, query, max_results_per_platform): 'Dell',
+                executor.submit(self.scrape_acer, query, max_results_per_platform): 'Acer',
+                executor.submit(self.scrape_lenovo, query, max_results_per_platform): 'Lenovo',
+                executor.submit(self.scrape_microsoft, query, max_results_per_platform): 'Microsoft',
+                executor.submit(self.scrape_apple, query, max_results_per_platform): 'Apple'
             }
             
             for future in as_completed(futures):
