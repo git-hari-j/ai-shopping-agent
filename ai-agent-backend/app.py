@@ -11,9 +11,10 @@ from database import engine, Base, get_db
 from models import User
 from auth import router as auth_router, get_current_user
 from agent.service import run_agent
+from core.logging_middleware import DetailedLoggingMiddleware
 
 # Initialize logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Lifecycle manager
@@ -29,6 +30,9 @@ app = FastAPI(
     version="3.0.0",
     lifespan=lifespan
 )
+
+# Add Logging Middleware first to capture everything
+app.add_middleware(DetailedLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,7 +62,7 @@ async def chat_endpoint(
         response_text = await run_agent(req.message, req.history)
         return ChatResponse(response=str(response_text))
     except Exception as e:
-        logger.error(f"Agent error: {e}")
+        logger.error(f"Agent error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/health")

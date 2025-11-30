@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     """
     Configuration settings for the DIY Financial Planner application.
     """
+    # Debug Mode
+    DEBUG: bool = False
 
     # Database settings
     DATABASE_URL: str = "postgresql://pguser:pgpass@localhost:5432/finplanner"
