@@ -16,6 +16,7 @@ webdriver-manager
 python-dotenv
 validators
 langchain-openai
+langchain-groq
 httpx
 numpy>=1.26.0
 pandas>=2.1.4
