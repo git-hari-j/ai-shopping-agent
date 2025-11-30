@@ -1,3 +1,6 @@
+import AuthProvider from '@/components/AuthProvider';
+import './globals.css';
+
 export const metadata = {
   title: 'AI Shopping Assistant',
   description: 'Futuristic shopping experience',
@@ -11,7 +14,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-slate-900 text-slate-100 min-h-screen flex flex-col">
-        {children}
+        <AuthProvider>
+          {children}
+        </AuthProvider>
       </body>
     </html>
   )
