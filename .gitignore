@@ -1,10 +1,10 @@
 # Dependencies
 node_modules/
 ai-agent-frontend/node_modules/
-ai-agent-backend/__pycache__/
-ai-agent-backend/*.pyc
-ai-agent-backend/venv/
-ai-agent-backend/env/
+adobe-commerce-agents/__pycache__/
+adobe-commerce-agents/*.pyc
+adobe-commerce-agents/venv/
+adobe-commerce-agents/env/
 
 # Build outputs
 ai-agent-frontend/build/

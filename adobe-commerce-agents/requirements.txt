@@ -1,12 +1,7 @@
 fastapi
 uvicorn
-sqlalchemy
 pydantic
 pydantic-settings
-asyncpg
-aiosqlite
-python-jose
-passlib[argon2]
 python-multipart
 email-validator
 requests
@@ -17,13 +12,5 @@ langchain-openai
 langchain-groq
 langgraph
 httpx
-numpy>=1.26.0
-pandas>=2.1.4
-scikit-learn
-scipy
-networkx
-phonenumbers
-unicodedata2
-schedule
 jinja2
 gql[all]

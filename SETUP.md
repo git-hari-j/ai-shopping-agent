@@ -15,7 +15,7 @@
 
 2. **Backend Setup**
    ```bash
-   cd ai-agent-backend
+   cd adobe-commerce-agents
    pip install -r requirements.txt
    ```
 

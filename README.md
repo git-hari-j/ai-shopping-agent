@@ -2,6 +2,10 @@
 
 A multi-agent conversational commerce system integrated with Adobe Commerce (Magento).
 
+## Folder Structure
+- `adobe-commerce-agents`: Backend agentic system (FastAPI + LangGraph)
+- `adobe-commerce-frontend`: Frontend application
+
 ## Features
 - **Conversational Shopping**: Natural language product discovery and details.
 - **Cart Management**: Add to cart, view cart, merge guest carts on login.

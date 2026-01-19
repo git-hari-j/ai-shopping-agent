@@ -15,4 +15,4 @@ The system communicates with Adobe Commerce via GraphQL.
 - `generateCustomerToken`: User authentication.
 - `placeOrder`: Order finalization.
 
-See `ai-agent-backend/services/magento.py` for the implementation details.
+See `adobe-commerce-agents/services/magento.py` for the implementation details.

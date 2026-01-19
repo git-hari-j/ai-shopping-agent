@@ -1,15 +1,10 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Body
+from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from pydantic import BaseModel
 import logging
-from contextlib import asynccontextmanager
 
 from config import settings
-from database import engine, Base, get_db
-from models import User
-from auth import router as auth_router, get_current_user
 from agent.service import run_agent
 from core.logging_middleware import DetailedLoggingMiddleware
 
@@ -17,18 +12,10 @@ from core.logging_middleware import DetailedLoggingMiddleware
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Lifecycle manager
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-
 app = FastAPI(
     title="AI Shopping Agent",
     description="Backend API for AI Shopping Agent",
-    version="3.0.0",
-    lifespan=lifespan
+    version="3.0.0"
 )
 
 # Add Logging Middleware first to capture everything
@@ -42,8 +29,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router)
-
 # Models
 class ChatRequest(BaseModel):
     message: str
@@ -54,10 +39,7 @@ class ChatResponse(BaseModel):
     # Future: return structured products for the UI columns
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(
-    req: ChatRequest,
-    current_user: User = Depends(get_current_user)
-):
+async def chat_endpoint(req: ChatRequest):
     try:
         response_text = await run_agent(req.message, req.history)
         return ChatResponse(response=str(response_text))

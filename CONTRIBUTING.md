@@ -5,7 +5,7 @@ We welcome contributions!
 ## Guidelines
 1. Fork the repository.
 2. Create a feature branch.
-3. Ensure code follows the project structure (Agents in `subgraphs/`, Tools in `tools/`).
+3. Ensure code follows the project structure (Agents in `adobe-commerce-agents/agent/subgraphs/`).
 4. Write clean, documented code.
 5. Submit a Pull Request.
 
