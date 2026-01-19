@@ -22,6 +22,8 @@
 3. **Configuration**
    - Copy `.env.example` to `.env`.
    - Set `MAGENTO_URL` to your Magento instance.
+   - Set `MAGENTO_ACCESS_TOKEN` using a token from **System > Extensions > Integrations** in the Magento Admin.
+     - Ensure the Integration has the necessary **Resource Access (API)** permissions selected.
    - Set `OPENAI_API_KEY` (or other LLM provider keys).
 
 4. **Run the Application**
