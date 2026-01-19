@@ -10,13 +10,12 @@ passlib[argon2]
 python-multipart
 email-validator
 requests
-beautifulsoup4
-selenium
-webdriver-manager
 python-dotenv
 validators
+langchain-core
 langchain-openai
 langchain-groq
+langgraph
 httpx
 numpy>=1.26.0
 pandas>=2.1.4
@@ -27,3 +26,4 @@ phonenumbers
 unicodedata2
 schedule
 jinja2
+gql[all]

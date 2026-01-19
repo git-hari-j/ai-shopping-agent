@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     AZURE_OAI_ENDPOINT: str = "your-azure-openai-endpoint"
     AZURE_OAI_DEPLOYMENT: str = "your-azure-openai-deployment"
 
+    # Magento settings
+    MAGENTO_URL: str = "https://demo-fklvc3a-qslkp4psgn6ta.us-4.magentosite.cloud/telcob2c"
+    MAGENTO_ACCESS_TOKEN: str | None = None
+
     # FastAPI / JWT settings
     SECRET_KEY: str = "your-secret-key-for-jwt"
     ALGORITHM: str = "HS256"
