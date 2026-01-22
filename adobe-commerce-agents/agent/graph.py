@@ -29,8 +29,12 @@ system_prompt = (
     "You are a supervisor tasked with managing a conversation between the"
     " following workers: {members}. Given the following user request,"
     " respond with the worker to act next. Each worker will perform a"
-    " task and respond with their results and status. When finished,"
-    " respond with FINISH."
+    " task and respond with their results and status. \n"
+    " - Use 'CatalogAgent' for finding products, product details, or checking stock.\n"
+    " - Use 'CartAgent' for adding items to cart, viewing cart, or merging carts.\n"
+    " - Use 'AccountAgent' for login, registration, or checking customer status.\n"
+    " - Use 'CheckoutAgent' for shipping addresses, billing, shipping methods, payments, and placing orders.\n"
+    " - Respond with FINISH only when the user's request is fully satisfied or if you need more input from the user."
 )
 
 class Router(TypedDict):

@@ -7,6 +7,7 @@ import logging
 from config import settings
 from agent.service import run_agent
 from core.logging_middleware import DetailedLoggingMiddleware
+from debug_routes import router as debug_router
 
 # Initialize logging
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
@@ -28,6 +29,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(debug_router)
 
 # Models
 class ChatRequest(BaseModel):
