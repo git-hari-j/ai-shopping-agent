@@ -1,114 +1,92 @@
 from typing import Annotated, Literal, TypedDict
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, BaseMessage
 from langgraph.graph import StateGraph, END, START
-from langgraph.graph.message import add_messages
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool
 from agent.utils import get_llm
 from agent.subgraphs.catalog_agent import catalog_agent
 from agent.subgraphs.cart_agent import cart_agent
 from agent.subgraphs.account_agent import account_agent
 from agent.subgraphs.checkout_agent import checkout_agent
-import functools
 import logging
 
 logger = logging.getLogger(__name__)
 
-# --------------------------------------------------------------------
-# 1. Define State
-# --------------------------------------------------------------------
-class AgentState(TypedDict):
-    messages: Annotated[list, add_messages]
-    next: str
-
-# --------------------------------------------------------------------
-# 2. Define Supervisor
-# --------------------------------------------------------------------
-members = ["CatalogAgent", "CartAgent", "AccountAgent", "CheckoutAgent"]
-options = members + ["FINISH"]
-
-system_prompt = (
-    "You are a supervisor tasked with managing a conversation between the"
-    " following workers: {members}. Given the following user request,"
-    " respond with the worker to act next. Each worker will perform a"
-    " task and respond with their results and status. \n"
-    " - Use 'CatalogAgent' for finding products, product details, or checking stock.\n"
-    " - Use 'CartAgent' for adding items to cart, viewing cart, or merging carts.\n"
-    " - Use 'AccountAgent' for login, registration, or checking customer status.\n"
-    " - Use 'CheckoutAgent' for shipping addresses, billing, shipping methods, payments, and placing orders.\n"
-    " - Respond with FINISH only when the user's request is fully satisfied or if you need more input from the user."
-)
-
-class Router(TypedDict):
-    """Worker to route to next. If no workers needed, route to FINISH."""
-    next: Literal["CatalogAgent", "CartAgent", "AccountAgent", "CheckoutAgent", "FINISH"]
-
 llm = get_llm()
 
-def supervisor_node(state: AgentState):
-    messages = state["messages"]
-    # We use structured output to enforce the routing decision
-    response = llm.with_structured_output(Router).invoke(
-        [
-            ("system", system_prompt.format(members=", ".join(members))),
-        ] + messages
-    )
-    next_node = response["next"]
+# --------------------------------------------------------------------
+# Define Tools that wrap Sub-Agents
+# --------------------------------------------------------------------
 
-    # If the LLM decides to finish, we might want to ensure the last message isn't just "FINISH"
-    # but for this pattern, the routing decision is internal state.
-    return {"next": next_node}
+@tool
+async def catalog_tool(request: str):
+    """
+    Use this tool for product discovery, searching for items, finding product prices,
+    descriptions, and checking availability. Input should be a clear natural language request.
+    """
+    # We invoke the sub-agent with the specific request
+    # The sub-agent has its own state, but we treat it as a stateless function call here
+    # passing the request as a new conversation.
+    # In a more advanced setup, we might pass history, but for "Delegation", a specific request is best.
+    result = await catalog_agent.ainvoke({"messages": [HumanMessage(content=request)]})
+    return result["messages"][-1].content
+
+@tool
+async def cart_tool(request: str):
+    """
+    Use this tool for managing the shopping cart.
+    Capabilities: Add items, view cart, remove items, merge cart.
+    Input should be a clear natural language request (e.g., "Add SKU-123 to cart").
+    """
+    result = await cart_agent.ainvoke({"messages": [HumanMessage(content=request)]})
+    return result["messages"][-1].content
+
+@tool
+async def account_tool(request: str):
+    """
+    Use this tool for user authentication and account management.
+    Capabilities: Login, Register, Check status.
+    Input should be a clear natural language request.
+    """
+    result = await account_agent.ainvoke({"messages": [HumanMessage(content=request)]})
+    return result["messages"][-1].content
+
+@tool
+async def checkout_tool(request: str):
+    """
+    Use this tool for the checkout process.
+    Capabilities: Set shipping/billing address, choose shipping method, payment, place order.
+    Do NOT use this for adding items to cart.
+    Input should be a clear natural language request.
+    """
+    result = await checkout_agent.ainvoke({"messages": [HumanMessage(content=request)]})
+    return result["messages"][-1].content
 
 # --------------------------------------------------------------------
-# 3. Define Graph
+# Main "Deep" Agent
 # --------------------------------------------------------------------
-workflow = StateGraph(AgentState)
 
-workflow.add_node("Supervisor", supervisor_node)
-
-# Helper to wrap sub-agents
-# The sub-agents are already compiled graphs, so we can invoke them.
-# However, they expect their own state schema. Usually compatible with list of messages.
-async def call_catalog_agent(state: AgentState):
-    result = await catalog_agent.ainvoke(state)
-    # We take the last message from the sub-agent and append it
-    return {"messages": [result["messages"][-1]]}
-
-async def call_cart_agent(state: AgentState):
-    result = await cart_agent.ainvoke(state)
-    return {"messages": [result["messages"][-1]]}
-
-async def call_account_agent(state: AgentState):
-    result = await account_agent.ainvoke(state)
-    return {"messages": [result["messages"][-1]]}
-
-async def call_checkout_agent(state: AgentState):
-    result = await checkout_agent.ainvoke(state)
-    return {"messages": [result["messages"][-1]]}
-
-workflow.add_node("CatalogAgent", call_catalog_agent)
-workflow.add_node("CartAgent", call_cart_agent)
-workflow.add_node("AccountAgent", call_account_agent)
-workflow.add_node("CheckoutAgent", call_checkout_agent)
-
-# Edges
-workflow.add_edge(START, "Supervisor")
-
-# Conditional edges from Supervisor
-workflow.add_conditional_edges(
-    "Supervisor",
-    lambda state: state["next"],
-    {
-        "CatalogAgent": "CatalogAgent",
-        "CartAgent": "CartAgent",
-        "AccountAgent": "AccountAgent",
-        "CheckoutAgent": "CheckoutAgent",
-        "FINISH": END
-    }
+system_prompt = (
+    "You are a sophisticated AI Shopping Assistant designed to help users with their e-commerce needs. "
+    "You operate as a 'Deep Agent', meaning you should think step-by-step to satisfy complex requests.\n\n"
+    "You have access to specialized workers (tools):\n"
+    "- catalog_tool: For finding products.\n"
+    "- cart_tool: For managing the cart.\n"
+    "- account_tool: For login/signup.\n"
+    "- checkout_tool: For completing the purchase.\n\n"
+    "STRATEGY:\n"
+    "1. Analyze the user's request.\n"
+    "2. If the request requires multiple steps (e.g., 'Find a laptop and buy it'), break it down.\n"
+    "   - First, search for the laptop using catalog_tool.\n"
+    "   - Then, ask the user to confirm which one to buy (if ambiguous) or add it using cart_tool.\n"
+    "3. Always verify the result of a tool call before proceeding.\n"
+    "4. If you need more information from the user, ask them.\n"
+    "5. Be helpful, polite, and concise."
 )
 
-# Edges from Workers back to Supervisor
-workflow.add_edge("CatalogAgent", "Supervisor")
-workflow.add_edge("CartAgent", "Supervisor")
-workflow.add_edge("AccountAgent", "Supervisor")
-workflow.add_edge("CheckoutAgent", "Supervisor")
-
-app = workflow.compile()
+# create_react_agent creates a graph that loops: Agent -> Tools -> Agent ...
+app = create_react_agent(
+    llm=llm,
+    tools=[catalog_tool, cart_tool, account_tool, checkout_tool],
+    state_modifier=system_prompt
+)
