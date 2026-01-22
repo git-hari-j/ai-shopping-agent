@@ -1,0 +1,110 @@
+{
+	"info": {
+		"_postman_id": "e5c4a3b2-1234-5678-9abc-def123456789",
+		"name": "Adobe Commerce AI Agents",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Main Chat",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"message\": \"Find me a gaming laptop under $2000\",\n    \"history\": []\n}"
+				},
+				"url": {
+					"raw": "{{BASE_URL}}/api/chat",
+					"host": [
+						"{{BASE_URL}}"
+					],
+					"path": [
+						"api",
+						"chat"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Debug: Catalog Agent",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"message\": \"Search for running shoes\",\n    \"history\": []\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{BASE_URL}}/api/debug/catalog",
+					"host": [
+						"{{BASE_URL}}"
+					],
+					"path": [
+						"api",
+						"debug",
+						"catalog"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Debug: Cart Agent",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"message\": \"Add SKU-123 to my cart\",\n    \"history\": []\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{BASE_URL}}/api/debug/cart",
+					"host": [
+						"{{BASE_URL}}"
+					],
+					"path": [
+						"api",
+						"debug",
+						"cart"
+					]
+				}
+			},
+			"response": []
+		},
+        {
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{BASE_URL}}/api/health",
+					"host": [
+						"{{BASE_URL}}"
+					],
+					"path": [
+						"api",
+						"health"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
